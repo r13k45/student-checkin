@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>課堂點名 - 報到掃描站</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<style>
+  :root {
+    --bg: #0f172a;
+    --card: #1e293b;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  #reader {
+    width: 100%;
+    max-width: 480px;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 2px solid #334155;
+  }
+  .counter {
+    margin-top: 14px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .counter b { color: var(--text); font-size: 18px; }
+  .log {
+    margin-top: 12px;
+    width: 100%;
+    max-width: 480px;
+    max-height: 160px;
+    overflow-y: auto;
+    font-size: 13px;
+  }
+  .log div {
+    padding: 6px 10px;
+    border-bottom: 1px solid #334155;
+    display: flex;
+    justify-content: space-between;
+  }
+  .log .ok { color: var(--ok); }
+  .log .warn { color: var(--warn); }
+  .log .err { color: var(--danger); }
+
+  .flash {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 50;
+    pointer-events: none;
+  }
+  .flash .box {
+    background: white;
+    color: #111827;
+    border-radius: 20px;
+    padding: 28px 32px;
+    text-align: center;
+    min-width: 260px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+    animation: pop 0.15s ease-out;
+  }
+  @keyframes pop {
+    from { transform: scale(0.85); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+  .avatar {
+    width: 72px; height: 72px; border-radius: 50%;
+    margin: 0 auto 10px;
+    background: #e5e7eb;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px; font-weight: 700; color: #6b7280;
+    overflow: hidden;
+  }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .flashName { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+  .flashStatus { font-size: 15px; }
+  .flashStatus.ok { color: var(--ok); }
+  .flashStatus.warn { color: var(--warn); }
+  .flashStatus.err { color: var(--danger); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <h1>📷 課堂點名報到站</h1>
+  <div class="subtitle">請將手機上的簽到 QR Code 對準鏡頭</div>
+  <div id="reader"></div>
+  <div class="counter">今日已簽到 <b id="countOk">0</b> 人</div>
+  <div class="log" id="log"></div>
+
+  <div class="flash hidden" id="flashOverlay">
+    <div class="box">
+      <div class="avatar" id="flashAvatar">👤</div>
+      <div class="flashName" id="flashName"></div>
+      <div class="flashStatus" id="flashStatus"></div>
+    </div>
+  </div>
+
+<script>
+// ======================================================================
+// 設定區：換成你的 Google Apps Script Web App 網址（與學生端頁面同一組）
+// ======================================================================
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzR-6SuHKbxK9cKMx0FiPAk2IGtlUuk6z3BHf1Q4C_G7cZ1uRLC1d2ZKvZb-y8PhCgS/exec";
+// ======================================================================
+
+let okCount = 0;
+let isBusy = false; // 防止同一時間重複觸發驗證
+let lastCode = null;
+let lastCodeAt = 0;
+
+function beep(freqStart, freqEnd, durationMs) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(freqStart, ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(freqEnd, ctx.currentTime + durationMs / 1000);
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + durationMs / 1000);
+    osc.start();
+    osc.stop(ctx.currentTime + durationMs / 1000);
+  } catch (e) { /* ignore audio errors */ }
+}
+
+function addLog(name, text, cls) {
+  const log = document.getElementById("log");
+  const row = document.createElement("div");
+  const time = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+  row.innerHTML = `<span class="${cls}">${name} - ${text}</span><span>${time}</span>`;
+  log.prepend(row);
+  while (log.children.length > 30) log.removeChild(log.lastChild);
+}
+
+function showFlash({ name, avatarUrl, statusText, cls, durationMs }) {
+  const overlay = document.getElementById("flashOverlay");
+  const avatar = document.getElementById("flashAvatar");
+  document.getElementById("flashName").textContent = name || "";
+  const statusEl = document.getElementById("flashStatus");
+  statusEl.textContent = statusText;
+  statusEl.className = "flashStatus " + cls;
+
+  if (avatarUrl) {
+    avatar.innerHTML = `<img src="${avatarUrl}" alt="">`;
+  } else {
+    avatar.innerHTML = (name || "?").charAt(0);
+  }
+  overlay.classList.remove("hidden");
+  setTimeout(() => overlay.classList.add("hidden"), durationMs || 1500);
+}
+
+async function onScanSuccess(decodedText) {
+  const now = Date.now();
+  // 同一組QR在1.5秒內重複觸發時忽略（避免鏡頭連續偵測同一張畫面造成重複呼叫）
+  if (isBusy || (decodedText === lastCode && now - lastCodeAt < 1500)) return;
+  isBusy = true;
+  lastCode = decodedText;
+  lastCodeAt = now;
+
+  try {
+    // Content-Type 故意用 text/plain，避免瀏覽器對 Apps Script 發出 CORS 預檢請求
+    const res = await fetch(APPS_SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "scan_verify", qr_string: decodedText })
+    });
+    const r = await res.json();
+
+    if (r.status === "ok") {
+      okCount++;
+      document.getElementById("countOk").textContent = okCount;
+      const late = !!r.late;
+      showFlash({
+        name: r.姓名 || "",
+        avatarUrl: r.照片網址 || "",
+        statusText: late ? "⚠️ 已簽到（遲到）" : "✅ 已簽到",
+        cls: late ? "warn" : "ok",
+        durationMs: 1500
+      });
+      addLog(r.姓名 || "", late ? "遲到簽到" : "準時簽到", late ? "warn" : "ok");
+      beep(late ? 500 : 880, late ? 400 : 1100, 150);
+    } else if (r.status === "duplicate") {
+      showFlash({
+        name: r.姓名 || "",
+        avatarUrl: r.照片網址 || "",
+        statusText: "已簽到過，不重複計入",
+        cls: "warn",
+        durationMs: 1500
+      });
+      addLog(r.姓名 || "", "重複掃描", "warn");
+    } else {
+      showFlash({
+        name: "",
+        avatarUrl: "",
+        statusText: "QR 無效或已過期，請學生重新整理頁面",
+        cls: "err",
+        durationMs: 1500
+      });
+      addLog("-", r.reason || r.status || "驗證失敗", "err");
+    }
+  } catch (e) {
+    showFlash({ name: "", avatarUrl: "", statusText: "網路異常，請重試", cls: "err", durationMs: 1200 });
+  } finally {
+    setTimeout(() => { isBusy = false; }, 400);
+  }
+}
+
+function onScanFailure() {
+  // 沒掃到東西是常態，不用處理
+}
+
+const html5QrCode = new Html5Qrcode("reader");
+Html5Qrcode.getCameras().then(cameras => {
+  let cameraId = cameras[0] && cameras[0].id;
+  const back = cameras.find(c => /back|environment|後/i.test(c.label));
+  if (back) cameraId = back.id;
+
+  html5QrCode.start(
+    cameraId || { facingMode: "environment" },
+    { fps: 10, qrbox: { width: 260, height: 260 } },
+    onScanSuccess,
+    onScanFailure
+  ).catch(err => {
+    document.getElementById("reader").innerHTML =
+      `<div style="padding:24px;color:#ef4444;">無法啟動攝影機：${err}<br>請確認已允許瀏覽器使用攝影機權限。</div>`;
+  });
+}).catch(err => {
+  document.getElementById("reader").innerHTML =
+    `<div style="padding:24px;color:#ef4444;">找不到攝影機，或瀏覽器不支援：${err}</div>`;
+});
+</script>
+</body>
+</html>
