@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>課堂點名 - 學生簽到</title>
+<script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@4/dist/fp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+  :root {
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --bg: #f5f7fb;
+    --card-bg: #ffffff;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --danger: #dc2626;
+    --warn: #d97706;
+    --ok: #16a34a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+  .card {
+    background: var(--card-bg);
+    border-radius: 20px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    padding: 28px 24px;
+    width: 100%;
+    max-width: 420px;
+    text-align: center;
+  }
+  h1 {
+    font-size: 20px;
+    margin: 0 0 4px;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 20px;
+  }
+  input {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    border: 1px solid #d1d5db;
+    border-radius: 12px;
+    margin-bottom: 12px;
+    background: #fafafa;
+  }
+  button {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    border: none;
+    border-radius: 12px;
+    background: var(--primary);
+    color: white;
+    cursor: pointer;
+    margin-top: 4px;
+  }
+  button:active { background: var(--primary-dark); }
+  button.secondary {
+    background: #e5e7eb;
+    color: var(--text);
+    margin-top: 8px;
+  }
+  .msg {
+    font-size: 14px;
+    margin-top: 12px;
+    line-height: 1.6;
+  }
+  .msg.error { color: var(--danger); }
+  .msg.warn { color: var(--warn); }
+  .msg.ok { color: var(--ok); }
+  .hidden { display: none !important; }
+  #qrWrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  #qrcode {
+    padding: 16px;
+    background: white;
+    border-radius: 16px;
+    border: 1px solid #eee;
+    margin: 12px 0;
+  }
+  .greeting { font-size: 17px; font-weight: 600; margin-bottom: 2px; }
+  .status-line {
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ok);
+    animation: pulse 1.5s infinite;
+  }
+  @keyframes pulse {
+    0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; }
+  }
+  .overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.45);
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+    z-index: 50;
+  }
+  .overlay .box {
+    background: white; border-radius: 18px; padding: 24px; max-width: 360px; text-align: center;
+  }
+  .overlay .box p { font-size: 15px; line-height: 1.6; }
+  .spinner {
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 3px solid #e5e7eb; border-top-color: var(--primary);
+    animation: spin 0.8s linear infinite;
+    margin: 8px auto;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>📋 課堂點名</h1>
+  <div class="subtitle">請依指示完成綁定，之後打開此頁面會自動顯示簽到 QR Code</div>
+
+  <!-- 載入中 -->
+  <div id="loadingView">
+    <div class="spinner"></div>
+    <div class="msg">正在驗證裝置...</div>
+  </div>
+
+  <!-- 註冊表單 -->
+  <div id="registerView" class="hidden">
+    <input id="inputName" type="text" placeholder="姓名（需與名單一致）" autocomplete="name">
+    <input id="inputSid" type="text" placeholder="學號" autocomplete="off">
+    <button id="btnRegister">綁定裝置並開始使用</button>
+    <div id="registerMsg" class="msg"></div>
+  </div>
+
+  <!-- QR 顯示畫面 -->
+  <div id="qrWrap" class="hidden">
+    <div class="greeting" id="greetingText">同學你好</div>
+    <div id="qrcode"></div>
+    <div class="status-line"><span class="dot"></span><span id="refreshHint">QR 每 15 秒自動更新</span></div>
+  </div>
+</div>
+
+<!-- 額度確認彈窗 -->
+<div id="confirmOverlay" class="overlay hidden">
+  <div class="box">
+    <p id="confirmText">偵測到新裝置，是否消耗 1 次自助解綁額度重新綁定？</p>
+    <button id="btnConfirmYes">確定，消耗額度綁定</button>
+    <button id="btnConfirmNo" class="secondary">取消</button>
+  </div>
+</div>
+
+<script>
+// ======================================================================
+// 設定區：部署 Google Apps Script 後，把下面換成你的 Web App 網址
+// （在 Apps Script 編輯器「部署」→「新增部署作業」後可以複製到，
+//   長得像 https://script.google.com/macros/s/xxxxxxxx/exec）
+// ======================================================================
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzR-6SuHKbxK9cKMx0FiPAk2IGtlUuk6z3BHf1Q4C_G7cZ1uRLC1d2ZKvZb-y8PhCgS/exec";
+// ======================================================================
+
+const LS_KEY = {
+  sid: "attendance_student_id",
+  sname: "attendance_student_name",
+  deviceId: "attendance_device_id"
+};
+
+let qrTimer = null;
+let cachedVisitorId = null;
+
+function uuid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    const v = c === "x" ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+async function getVisitorId() {
+  if (cachedVisitorId) return cachedVisitorId;
+  const fp = await FingerprintJS.load();
+  const result = await fp.get();
+  cachedVisitorId = result.visitorId;
+  return cachedVisitorId;
+}
+
+async function callApi(action, body) {
+  // 注意：Content-Type 故意用 text/plain，是 Google Apps Script 網頁應用程式的固定用法，
+  // 這樣瀏覽器才不會先送一次 CORS 預檢請求（Apps Script 對預檢請求處理不好），
+  // 後端 Code.gs 仍然會把內容當 JSON 解析，不影響功能。
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action, ...body })
+  });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+function show(id) {
+  ["loadingView", "registerView", "qrWrap"].forEach(v => {
+    document.getElementById(v).classList.toggle("hidden", v !== id);
+  });
+}
+
+function setRegisterMsg(text, cls) {
+  const el = document.getElementById("registerMsg");
+  el.textContent = text || "";
+  el.className = "msg " + (cls || "");
+}
+
+const REASON_TEXT = {
+  not_in_roster: "找不到這個學號，請確認輸入正確，或聯絡助教確認名單是否已建立。",
+  name_mismatch: "姓名與學號不符，請確認輸入正確。",
+  device_used_by_other: "這支裝置已經被其他學號綁定過了，請確認是否用錯手機。",
+  quota_exhausted: "本學期自助解綁額度已用盡，請攜帶手機與學生證，親自找助教手動解鎖。",
+  missing_fields: "資料不完整，請重新輸入。"
+};
+
+let pendingConfirmPayload = null;
+
+function openConfirm(quotaLeft) {
+  document.getElementById("confirmText").textContent =
+    `偵測到這是新的裝置，是否消耗 1 次自助解綁額度重新綁定？（剩餘 ${quotaLeft} 次）`;
+  document.getElementById("confirmOverlay").classList.remove("hidden");
+}
+function closeConfirm() {
+  document.getElementById("confirmOverlay").classList.add("hidden");
+}
+
+document.getElementById("btnConfirmNo").addEventListener("click", () => {
+  closeConfirm();
+  pendingConfirmPayload = null;
+  show("registerView");
+  setRegisterMsg("已取消。若這確實是你的新裝置，可以重新送出綁定。", "warn");
+});
+
+document.getElementById("btnConfirmYes").addEventListener("click", async () => {
+  if (!pendingConfirmPayload) return;
+  closeConfirm();
+  show("loadingView");
+  try {
+    const r = await callApi("register_confirm", pendingConfirmPayload);
+    if (r.status === "ok") {
+      localStorage.setItem(LS_KEY.sid, pendingConfirmPayload.student_id);
+      localStorage.setItem(LS_KEY.sname, r.姓名 || pendingConfirmPayload.name || "");
+      localStorage.setItem(LS_KEY.deviceId, pendingConfirmPayload.device_id);
+      enterQrMode(r.姓名 || pendingConfirmPayload.name);
+    } else {
+      show("registerView");
+      setRegisterMsg(REASON_TEXT[r.reason] || "綁定失敗，請重新嘗試。", "error");
+    }
+  } catch (e) {
+    show("registerView");
+    setRegisterMsg("網路異常，請稍後再試一次。", "error");
+  }
+});
+
+document.getElementById("btnRegister").addEventListener("click", async () => {
+  const name = document.getElementById("inputName").value.trim();
+  const sid = document.getElementById("inputSid").value.trim();
+  if (!name || !sid) {
+    setRegisterMsg("請填寫姓名與學號。", "error");
+    return;
+  }
+  setRegisterMsg("處理中...", "");
+  try {
+    const visitorId = await getVisitorId();
+    const deviceId = localStorage.getItem(LS_KEY.deviceId) || uuid();
+    const payload = { student_id: sid, name, device_id: deviceId, visitor_id: visitorId };
+    const r = await callApi("register", payload);
+
+    if (r.status === "ok") {
+      localStorage.setItem(LS_KEY.sid, sid);
+      localStorage.setItem(LS_KEY.sname, r.姓名 || name);
+      localStorage.setItem(LS_KEY.deviceId, deviceId);
+      enterQrMode(r.姓名 || name);
+    } else if (r.status === "needs_confirm") {
+      pendingConfirmPayload = payload;
+      openConfirm(r.quota_left);
+    } else {
+      setRegisterMsg(REASON_TEXT[r.reason] || "綁定失敗，請確認資料後再試一次。", "error");
+    }
+  } catch (e) {
+    setRegisterMsg("網路異常，請確認網路連線後再試一次。", "error");
+  }
+});
+
+function enterQrMode(name) {
+  document.getElementById("greetingText").textContent = `${name || "同學"}，你好 👋`;
+  show("qrWrap");
+  startQrLoop();
+}
+
+let qrObj = null;
+async function refreshQr() {
+  const sid = localStorage.getItem(LS_KEY.sid);
+  const deviceId = localStorage.getItem(LS_KEY.deviceId);
+  try {
+    const visitorId = await getVisitorId();
+    const r = await callApi("get_qr", { student_id: sid, device_id: deviceId, visitor_id: visitorId });
+    if (r.status === "ok") {
+      const container = document.getElementById("qrcode");
+      if (!qrObj) {
+        container.innerHTML = "";
+        qrObj = new QRCode(container, { text: r.qr_string, width: 220, height: 220, correctLevel: QRCode.CorrectLevel.M });
+      } else {
+        qrObj.clear();
+        qrObj.makeCode(r.qr_string);
+      }
+      const secs = Number(r.refresh_seconds) || 15;
+      document.getElementById("refreshHint").textContent = `QR 每 ${secs} 秒自動更新`;
+      restartTimer(secs);
+    } else {
+      // 裝置驗證失敗（例如被助教手動解鎖），提示重新整理走一次註冊流程
+      document.getElementById("qrcode").innerHTML =
+        `<div style="padding:24px;color:#dc2626;font-size:14px;">裝置驗證失敗，請重新整理頁面重新綁定</div>`;
+      stopQrLoop();
+    }
+  } catch (e) {
+    document.getElementById("refreshHint").textContent = "網路異常，正在重試...";
+  }
+}
+
+function restartTimer(seconds) {
+  if (qrTimer) clearTimeout(qrTimer);
+  qrTimer = setTimeout(refreshQr, seconds * 1000);
+}
+function startQrLoop() { refreshQr(); }
+function stopQrLoop() { if (qrTimer) clearTimeout(qrTimer); }
+
+// 切回分頁時重新驗證一次，避免長時間背景造成QR過期又沒更新
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && !document.getElementById("qrWrap").classList.contains("hidden")) {
+    refreshQr();
+  }
+});
+
+// ------- 初始化：判斷是先顯示註冊表單，還是直接進 QR 模式 -------
+(async function init() {
+  const sid = localStorage.getItem(LS_KEY.sid);
+  const deviceId = localStorage.getItem(LS_KEY.deviceId);
+  const sname = localStorage.getItem(LS_KEY.sname);
+
+  if (!sid || !deviceId) {
+    show("registerView");
+    return;
+  }
+
+  try {
+    const visitorId = await getVisitorId();
+    const payload = { student_id: sid, name: sname || "", device_id: deviceId, visitor_id: visitorId };
+    const r = await callApi("register", payload);
+
+    if (r.status === "ok") {
+      if (r.action === "healed") {
+        // LocalStorage 曾被清除但裝置指紋吻合，這裡拿到後端配的新 device_id 概念上一致，維持本機值即可
+      }
+      enterQrMode(r.姓名 || sname);
+    } else if (r.status === "needs_confirm") {
+      pendingConfirmPayload = payload;
+      show("registerView");
+      document.getElementById("inputName").value = sname || "";
+      document.getElementById("inputSid").value = sid || "";
+      openConfirm(r.quota_left);
+    } else {
+      show("registerView");
+      document.getElementById("inputSid").value = sid || "";
+      setRegisterMsg(REASON_TEXT[r.reason] || "驗證失敗，請重新確認資料。", "error");
+    }
+  } catch (e) {
+    show("registerView");
+    document.getElementById("inputSid").value = sid || "";
+    setRegisterMsg("網路異常，請確認網路連線後重新整理頁面。", "error");
+  }
+})();
+</script>
+</body>
+</html>
